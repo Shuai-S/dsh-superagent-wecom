@@ -1,0 +1,4 @@
+# Mount the WeCom Source plugin into the superagent profile.
+- insert:
+    - id: dsh-superagent-wecom
+      name: 'dsh-superagent-wecom'
