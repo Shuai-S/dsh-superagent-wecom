@@ -1,8 +1,10 @@
 /** Local callback HTTP server: one node:http server for every configured
- *  account, routed at '/callback/<callbackPath>'. WeCom requires an answer
- *  within 5 seconds, so the handler verifies, decrypts and parses
- *  synchronously and answers 200 'success' immediately; the engine pipeline
- *  runs async afterwards and its failures are only logged. */
+ *  account and smart robot, routed at '/callback/<callbackPath>'. WeCom
+ *  requires an answer within 5 seconds, so the handler verifies, decrypts and
+ *  parses synchronously and answers 200 'success' immediately; the engine
+ *  pipeline runs async afterwards and its failures are only logged. Apps push
+ *  XML bodies ({@link parseWecomXml}); smart robots push JSON bodies carrying
+ *  an encrypt field (official 101034, read 2026-11-04). */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { XMLParser } from 'fast-xml-parser'
 import { decrypt, verifySignature } from './crypto.ts'
@@ -17,6 +19,16 @@ export interface CallbackAccount {
   callbackPath: string
 }
 
+/** Structural subset of one smart robot (智能机器人): same callback config
+ *  shape as accounts (URL/Token/EncodingAESKey), no corp fields — in-house
+ *  robots decrypt with receiveid '' (official 101034, read 2026-11-04). */
+export interface CallbackBot {
+  name: string
+  token: string
+  encodingAESKey: string
+  callbackPath: string
+}
+
 /** One inbound WeCom POST after verify+decrypt: fields and raw XML. */
 export interface IncomingWecomMessage {
   account: CallbackAccount
@@ -24,11 +36,21 @@ export interface IncomingWecomMessage {
   xml: string
 }
 
+/** One inbound smart-robot POST after verify+decrypt: the decrypted JSON
+ *  payload plus the raw plaintext (JSON protocol, official 101045). */
+export interface IncomingBotMessage {
+  bot: CallbackBot
+  payload: Record<string, unknown>
+  raw: string
+}
+
 export interface CallbackServerOptions {
   port: number
   bindAddress: string
   accounts: CallbackAccount[]
+  bots: CallbackBot[]
   onMessage: (message: IncomingWecomMessage) => void | Promise<void>
+  onBotMessage: (message: IncomingBotMessage) => void | Promise<void>
 }
 
 const MAX_BODY_BYTES = 1024 * 1024
@@ -89,11 +111,20 @@ const respond = (res: ServerResponse, status: number, body: string): void => {
   res.end(body)
 }
 
+type CallbackRoute = { kind: 'account'; account: CallbackAccount } | { kind: 'bot'; bot: CallbackBot }
+
+function resolveRoute(opts: CallbackServerOptions, path: string): CallbackRoute | undefined {
+  const account = opts.accounts.find((a) => path === 'callback/' + a.callbackPath.replace(/^\/+|\/+$/g, ''))
+  if (account) return { kind: 'account', account }
+  const bot = opts.bots.find((b) => path === 'callback/' + b.callbackPath.replace(/^\/+|\/+$/g, ''))
+  if (bot) return { kind: 'bot', bot }
+  return undefined
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse, opts: CallbackServerOptions): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://callback.local')
-  const path = url.pathname.replace(/^\/+|\/+$/g, '')
-  const account = opts.accounts.find((a) => path === 'callback/' + a.callbackPath.replace(/^\/+|\/+$/g, ''))
-  if (!account) {
+  const route = resolveRoute(opts, url.pathname.replace(/^\/+|\/+$/g, ''))
+  if (!route) {
     respond(res, 404, 'not found')
     return
   }
@@ -102,40 +133,83 @@ async function handle(req: IncomingMessage, res: ServerResponse, opts: CallbackS
   const nonce = url.searchParams.get('nonce') ?? ''
 
   if (req.method === 'GET') {
-    // URL verification: check the signature over the encrypted echostr, then
-    // return the decrypted random message as the plain-text body. The echostr
-    // is always encrypted, so this needs the EncodingAESKey.
+    // URL verification (same shape for accounts and robots, official
+    // 90930/101034): check the signature over the encrypted echostr, then
+    // return the decrypted random message as the plain-text body. Accounts
+    // decrypt with the corpid as receiveid, robots with the empty string.
     const echostr = url.searchParams.get('echostr') ?? ''
-    if (!verifySignature(account.token, timestamp, nonce, echostr, msgSignature)) {
-      console.error('[wecom] GET verify: bad msg_signature for account ' + account.callbackPath)
+    const token = route.kind === 'account' ? route.account.token : route.bot.token
+    const routeName = route.kind === 'account' ? route.account.callbackPath : route.bot.callbackPath
+    if (!verifySignature(token, timestamp, nonce, echostr, msgSignature)) {
+      console.error('[wecom] GET verify: bad msg_signature for ' + route.kind + ' ' + routeName)
       respond(res, 403, 'invalid signature')
       return
     }
-    respond(res, 200, decrypt(account.encodingAESKey, echostr, account.corpid))
+    const aesKey = route.kind === 'account' ? route.account.encodingAESKey : route.bot.encodingAESKey
+    const receiveId = route.kind === 'account' ? route.account.corpid : ''
+    respond(res, 200, decrypt(aesKey, echostr, receiveId))
     return
   }
 
   if (req.method === 'POST') {
     const body = await readBody(req)
-    // WeCom callbacks are always signed+encrypted (official 90930): the body
-    // carries <Encrypt>; verify, then decrypt to the real message XML.
-    const outer = parseWecomXml(body)
-    const encrypt = outer.Encrypt ?? ''
-    if (!encrypt) {
-      respond(res, 400, 'missing Encrypt field')
-      return
+    // Callbacks are always signed+encrypted: apps carry <Encrypt> in XML
+    // (official 90930), robots carry {"encrypt": ...} in JSON (official
+    // 101034). Verify, then decrypt to the real payload.
+    let encrypt: string
+    let plain: string
+    if (route.kind === 'bot') {
+      let envelope: { encrypt?: unknown }
+      try {
+        envelope = JSON.parse(body) as { encrypt?: unknown }
+      } catch {
+        respond(res, 400, 'invalid JSON body')
+        return
+      }
+      encrypt = typeof envelope.encrypt === 'string' ? envelope.encrypt : ''
+      if (!encrypt) {
+        respond(res, 400, 'missing encrypt field')
+        return
+      }
+      if (!verifySignature(route.bot.token, timestamp, nonce, encrypt, msgSignature)) {
+        console.error('[wecom] POST: bad msg_signature for bot ' + route.bot.callbackPath)
+        respond(res, 403, 'invalid signature')
+        return
+      }
+      // In-house robots decrypt with receiveid '' (official 101034).
+      plain = decrypt(route.bot.encodingAESKey, encrypt, '')
+    } else {
+      const outer = parseWecomXml(body)
+      encrypt = outer.Encrypt ?? ''
+      if (!encrypt) {
+        respond(res, 400, 'missing Encrypt field')
+        return
+      }
+      if (!verifySignature(route.account.token, timestamp, nonce, encrypt, msgSignature)) {
+        console.error('[wecom] POST: bad msg_signature for account ' + route.account.callbackPath)
+        respond(res, 403, 'invalid signature')
+        return
+      }
+      plain = decrypt(route.account.encodingAESKey, encrypt, route.account.corpid)
     }
-    if (!verifySignature(account.token, timestamp, nonce, encrypt, msgSignature)) {
-      console.error('[wecom] POST: bad msg_signature for account ' + account.callbackPath)
-      respond(res, 403, 'invalid signature')
-      return
-    }
-    const xml = decrypt(account.encodingAESKey, encrypt, account.corpid)
-    const fields = parseWecomXml(xml)
     // 5s 铁律: answer before any engine work. Failures below are logged only.
     respond(res, 200, 'success')
+    if (route.kind === 'bot') {
+      let payload: Record<string, unknown>
+      try {
+        payload = JSON.parse(plain) as Record<string, unknown>
+      } catch {
+        console.error('[wecom] bot payload is not JSON: ' + plain.slice(0, 500))
+        return
+      }
+      void Promise.resolve()
+        .then(() => opts.onBotMessage({ bot: route.bot, payload, raw: plain }))
+        .catch((error: unknown) => console.error('[wecom] onBotMessage failed:', String(error).slice(0, 300)))
+      return
+    }
+    const fields = parseWecomXml(plain)
     void Promise.resolve()
-      .then(() => opts.onMessage({ account, fields, xml }))
+      .then(() => opts.onMessage({ account: route.account, fields, xml: plain }))
       .catch((error: unknown) => console.error('[wecom] onMessage failed:', String(error).slice(0, 300)))
     return
   }

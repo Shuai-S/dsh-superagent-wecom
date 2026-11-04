@@ -44,3 +44,25 @@ export async function sendAppMessage(account: WecomCredentials, touser: string, 
 }
 
 export const emptyLink = (label: Localized) => ({ url: '', label })
+
+/** Fetch one image by MediaId through media/get with the account's token
+ *  (https://developer.work.weixin.qq.com/document/path/90236). Binary success
+ *  streams the bytes; a JSON body carries the business error. */
+export async function getMediaImage(account: WecomCredentials, mediaId: string, maxBytes: number, signal: AbortSignal): Promise<{ data: Buffer; mediaType: string }> {
+  const token = await getToken(account.corpid, account.secret)
+  const res = await fetch('https://qyapi.weixin.qq.com/cgi-bin/media/get?access_token=' + encodeURIComponent(token) + '&media_id=' + encodeURIComponent(mediaId),
+    { signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]) })
+  const contentType = (res.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+  if (!res.ok || contentType.includes('application/json')) {
+    const bodyText = await res.text()
+    let detail = bodyText.slice(0, 200)
+    try {
+      const parsed = JSON.parse(bodyText) as { errcode?: number; errmsg?: string }
+      detail = 'errcode=' + parsed.errcode + ' errmsg=' + (parsed.errmsg ?? '')
+    } catch { /* not a JSON error body */ }
+    throw new Error('wecom media/get failed: HTTP ' + res.status + ' ' + detail)
+  }
+  const data = Buffer.from(await res.arrayBuffer())
+  if (data.length > maxBytes) throw new Error('The image exceeds the ' + maxBytes + ' byte limit')
+  return { data, mediaType: contentType }
+}

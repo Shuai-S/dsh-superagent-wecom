@@ -2,7 +2,10 @@
  *  wechat-crypto package is unmaintained). Implements the official 加解密协议:
  *  signature check, AES-256-CBC encrypt/decrypt with the EncodingAESKey,
  *  PKCS7 padding, and the 16+4+msg+receiveid plaintext structure.
- *  Contract: https://developer.work.weixin.qq.com/document/path/90968 */
+ *  Contract: https://developer.work.weixin.qq.com/document/path/90968
+ *  Smart-robot variant (official 101034, read 2026-11-04): same AES scheme,
+ *  but the receiveid is the empty string, and media-download URLs (official
+ *  101045) return bytes encrypted with the same key — see decryptBytes. */
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 /** sha1 over the sorted [token, timestamp, nonce, encrypt] concatenation. */
@@ -25,16 +28,15 @@ function aesKeyOf(encodingAESKey: string): Buffer {
   return key
 }
 
-/** Decrypt one callback payload: AES-256-CBC (IV = first 16 key bytes), strip
- *  PKCS7, then plaintext = 16 random bytes + 4-byte BE msg_len + msg + receiveid.
- *  Throws when the trailing receiveid does not match the expected corpid. */
-export function decrypt(encodingAESKey: string, encryptB64: string, corpid: string): string {
+/** Shared core: AES-256-CBC (IV = first 16 key bytes), strip PKCS7 (32-byte
+ *  block), then plaintext = 16 random bytes + 4-byte BE msg_len + msg + receiveid. */
+function decryptCore(encodingAESKey: string, cipher: Buffer, receiveId: string): Buffer {
   const key = aesKeyOf(encodingAESKey)
   const decipher = createDecipheriv('aes-256-cbc', key, key.subarray(0, 16))
   decipher.setAutoPadding(false)
   let plain: Buffer
   try {
-    plain = Buffer.concat([decipher.update(Buffer.from(encryptB64, 'base64')), decipher.final()])
+    plain = Buffer.concat([decipher.update(cipher), decipher.final()])
   } catch {
     throw new Error('wecom crypto: decrypt failed (ciphertext is not valid AES-256-CBC data)')
   }
@@ -46,18 +48,32 @@ export function decrypt(encodingAESKey: string, encryptB64: string, corpid: stri
   if (20 + msgLen > content.length) throw new Error('wecom crypto: msg_len exceeds the decrypted plaintext')
   const msg = content.subarray(20, 20 + msgLen)
   const receiveid = content.subarray(20 + msgLen).toString('utf8')
-  if (receiveid !== corpid) throw new Error('wecom crypto: receiveid mismatch (expected corpid ' + corpid + ', got ' + receiveid + ')')
-  return msg.toString('utf8')
+  if (receiveid !== receiveId) throw new Error('wecom crypto: receiveid mismatch (expected ' + JSON.stringify(receiveId) + ', got ' + JSON.stringify(receiveid) + ')')
+  return msg
+}
+
+/** Decrypt one callback payload to its UTF-8 message. Throws when the trailing
+ *  receiveid does not match the expected id (accounts: corpid; smart robots: ''). */
+export function decrypt(encodingAESKey: string, encryptB64: string, receiveId: string): string {
+  return decryptCore(encodingAESKey, Buffer.from(encryptB64, 'base64'), receiveId).toString('utf8')
+}
+
+/** Binary variant for smart-robot media URLs (official 101045, read
+ *  2026-11-04): the downloaded file is AES-encrypted with the same key
+ *  (AES-256-CBC, PKCS#7 to 32 bytes, IV = first 16 key bytes), and the
+ *  receiveid is the empty string for in-house robots. */
+export function decryptBytes(encodingAESKey: string, cipher: Buffer, receiveId: string): Buffer {
+  return decryptCore(encodingAESKey, cipher, receiveId)
 }
 
 /** Inverse of decrypt (self-test / probe helper; WeCom only ever sends the
  *  encrypted form). PKCS7-pads to the 32-byte block the official encoder uses. */
-export function encrypt(encodingAESKey: string, plaintext: string, corpid: string): string {
+export function encrypt(encodingAESKey: string, plaintext: string, receiveId: string): string {
   const key = aesKeyOf(encodingAESKey)
   const msg = Buffer.from(plaintext, 'utf8')
   const len = Buffer.alloc(4)
   len.writeUInt32BE(msg.length, 0)
-  const raw = Buffer.concat([randomBytes(16), len, msg, Buffer.from(corpid, 'utf8')])
+  const raw = Buffer.concat([randomBytes(16), len, msg, Buffer.from(receiveId, 'utf8')])
   const padLen = 32 - (raw.length % 32)
   const padded = Buffer.concat([raw, Buffer.alloc(padLen, padLen)])
   const cipher = createCipheriv('aes-256-cbc', key, key.subarray(0, 16))
