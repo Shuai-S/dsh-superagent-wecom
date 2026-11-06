@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WeCom Source",
+    "description": "Direct WeCom source: a self-built app in callback mode receives app-chat and group-@ messages; replies go back via the WeCom OpenAPI."
+  }
+}

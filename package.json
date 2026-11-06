@@ -1,16 +1,21 @@
 {
   "name": "dsh-superagent-wecom",
   "description": "WeCom (企业微信) Source for dsh-superagent: a self-built app in callback mode receives app-chat messages into the engine pipeline; replies go back via the WeCom OpenAPI.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "author": "Shuai-S",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
-    ".": "./lib/index.js"
+    ".": "./lib/index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
+  "icon": "icon.svg",
   "files": [
     "lib",
+    "locale",
+    "icon.svg",
     "cordis.patch.yml"
   ],
   "engines": {
