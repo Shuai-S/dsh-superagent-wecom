@@ -4,9 +4,11 @@
  *  receive(). Health reports the listening state and start failures such as
  *  EADDRINUSE, with a compact in-memory counter tail (in=/out=/fail=/last=).
  *  健康上报监听状态与启动失败（如 EADDRINUSE），detail 末尾追加紧凑内存计数
- *  （in=/out=/fail=/last=<ISO>，单行，进程重启清零）。 */
+ *  （in=/out=/fail=/deny=/last=<ISO>，单行，进程重启清零）。 */
 import type { Server } from 'node:http'
 import type { SourceContextLike } from './types.ts'
+import { aclDenyNoticeText, evaluateAcl } from './acl.ts'
+import { sendAppMessage } from './robot.ts'
 import { startCallbackServer, type IncomingBotMessage, type IncomingWecomMessage } from './callback.ts'
 import { bumpStat, buildWecomBotTrigger, buildWecomTrigger, channelConfig, HEALTH_ENTRY, statsDetail, type WecomAccount, type WecomBot, type WecomConfig } from './wecom-kind.ts'
 
@@ -56,6 +58,27 @@ async function onCallbackMessage(source: SourceContextLike, seenSenders: Set<str
     console.error('[wecom] skip: msgType=' + String(message.fields.MsgType ?? '') + ' (no MsgId or empty text)')
     return
   }
+  // ACL 判定（契约 §3）：派发（source.receive）之前；policy 缺省 = 全放行。
+  // 应用账号消息均为单聊（addressed 'direct'）→ conversationType 恒 'single'。
+  const verdict = evaluateAcl(channelConfig.current?.policy, { actorId: from, conversationType: 'single' })
+  if (!verdict.allowed) {
+    bumpStat('deny')
+    console.error('[wecom] acl deny: reason=' + verdict.reason + ' from=' + from)
+    // 回执经应用账号发 denyText（callback 路由表不携带 secret，从 config holder
+    // 解析完整凭据）；回执失败只记 stderr——回执失败不是发送失败，不入
+    // failure-log（send-failures.jsonl 只记 channel.send 传输失败）。
+    const fullAccount = channelConfig.current?.accounts.find((a) => a.callbackPath === message.account.callbackPath)
+    if (fullAccount) {
+      try {
+        await sendAppMessage(fullAccount, from, aclDenyNoticeText(verdict, 'zh'))
+      } catch (error) {
+        console.error('[wecom] acl deny receipt failed: ' + String(error).slice(0, 200))
+      }
+    } else {
+      console.error('[wecom] acl deny receipt skipped: account not in config: ' + message.account.callbackPath)
+    }
+    return
+  }
   console.error('[wecom] msg in: type=' + String(trigger.meta.msgType) + ' msgId=' + String(trigger.meta.messageId) + ' from=' + from + ' text="' + trigger.text.slice(0, 60) + '"')
   bumpStat('in')
   await source.receive(trigger)
@@ -84,6 +107,16 @@ async function onBotCallbackMessage(source: SourceContextLike, seenSenders: Set<
     } else {
       console.error('[wecom] bot skip (' + reason + ') msgId=' + msgId)
     }
+    return
+  }
+  // ACL 判定（契约 §3）：派发前；机器人只收群聊（buildWecomBotTrigger 已过滤），
+  // conversationType 恒 'group' —— groupOnly 对机器人消息不产生额外拒绝。
+  const verdict = evaluateAcl(channelConfig.current?.policy, { actorId: from, conversationType: 'group' })
+  if (!verdict.allowed) {
+    bumpStat('deny')
+    // 机器人无回信路径（回复走一次性 response_url，M3 才接线）：拒绝只计数 + log
+    // 注明无回执路径；不进 failure-log（ACL 拒绝不是发送失败）。
+    console.error('[wecom] bot acl deny: reason=' + verdict.reason + ' from=' + from + '（机器人无回执路径，仅计数）')
     return
   }
   console.error('[wecom] bot msg in: type=' + String(trigger.meta.msgType) + ' msgId=' + String(trigger.meta.messageId) + ' chat=' + String(trigger.meta.chatid) + ' from=' + from + ' text="' + trigger.text.slice(0, 60) + '"')

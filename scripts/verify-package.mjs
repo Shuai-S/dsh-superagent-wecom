@@ -66,6 +66,10 @@ try {
 if (lib) {
   check("lib/index.js contains 'sources.register('", lib.includes('sources.register('), 'the orchestrator registration seam is missing from the build')
   check("lib/index.js contains kind name '" + KIND + "'", lib.includes(KIND), 'the kind name is missing from the build')
+  // 7) 路由契约探针（P-B，契约 §1/§2）：webServer seam 路由名防漂移。
+  //    client bundle 探针 N/A：本包无 client bundle（「源设置」页壳属 P-C'）。
+  check("lib/index.js contains '/dsh-wecom/api'", lib.includes('/dsh-wecom/api'), 'deliver route prefix drifted')
+  check("lib/index.js contains '/deliver'", lib.includes('/deliver'), 'deliver route literal drifted')
 }
 
 // 3. cordis.patch.yml 挂载包名一致

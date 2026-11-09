@@ -24,6 +24,7 @@
  *  JSONL（failure-log.ts）；内存计数（wecomStats）随健康上报输出。 */
 import { z } from 'zod'
 import type { Localized, OutboundMessageLike, SourceKindLike, TriggerLike } from './types.ts'
+import type { AclPolicy } from './acl.ts'
 import type { IncomingWecomMessage } from './callback.ts'
 import { decryptBytes } from './crypto.ts'
 import { emptyLink, getMediaImage, sendAppMessage } from './robot.ts'
@@ -58,23 +59,35 @@ export interface WecomConfig {
   callbackPort: number
   bindAddress: string
   sendAck: boolean
+  /** ACL 访问模式（契约 §3，vendored acl.ts）；不设 = 全放行（向后兼容）。 */
+  policy?: AclPolicy
 }
 
 // channel.send reads config through this holder; watch() refreshes it every round.
 export const channelConfig: { current?: WecomConfig } = {}
 
 // —— 内存健康计数（watch() 把 statsDetail() 拼进每条 health detail；进程重启清零）——
-// in=送达 receive() 的触发数；out=整条发送成功数；fail=发送失败数（首块/后续块失败均计）。
-export const wecomStats = { in: 0, out: 0, fail: 0, last: '' }
-export type StatKey = 'in' | 'out' | 'fail'
+// in=送达 receive() 的触发数；out=整条发送成功数；fail=发送失败数（首块/后续块失败均计）；
+// deny=ACL 拒绝数（契约 §3：派发前拒绝，不进 in/out/fail，failure-log 不记）。
+export const wecomStats = { in: 0, out: 0, fail: 0, deny: 0, last: '' }
+export type StatKey = 'in' | 'out' | 'fail' | 'deny'
 export function bumpStat(key: StatKey): void {
   wecomStats[key] += 1
   wecomStats.last = new Date().toISOString()
 }
-/** 紧凑单行计数：in=3 out=2 fail=0 last=<ISO>（尚无事件时 last=-）。 */
+/** 紧凑单行计数：in=3 out=2 fail=0 deny=1 last=<ISO>（尚无事件时 last=-）。 */
 export function statsDetail(): string {
-  return 'in=' + wecomStats.in + ' out=' + wecomStats.out + ' fail=' + wecomStats.fail + ' last=' + (wecomStats.last || '-')
+  return 'in=' + wecomStats.in + ' out=' + wecomStats.out + ' fail=' + wecomStats.fail + ' deny=' + wecomStats.deny + ' last=' + (wecomStats.last || '-')
 }
+
+/** ACL 访问模式（契约 docs/rpc-contract.md §3；判定实现在 vendored src/acl.ts）。
+ *  不设 policy = 全放行（向后兼容）；形状非法按 schema 拒绝，不做静默降级。 */
+export const AclPolicySchema = z.object({
+  mode: z.enum(['allowlist', 'open']),
+  allowUsers: z.array(z.string()),
+  groupOnly: z.boolean().optional(),
+  denyText: z.object({ zh: z.string().min(1), en: z.string().min(1) }).optional(),
+}).strict()
 
 export const WecomConfigSchema = z.object({
   accounts: z.array(z.object({
@@ -95,6 +108,7 @@ export const WecomConfigSchema = z.object({
   callbackPort: z.number().int().min(1).max(65535).default(3090),
   bindAddress: z.string().default('0.0.0.0'),
   sendAck: z.boolean().default(true),
+  policy: AclPolicySchema.optional(),
 }).strict()
 export type WecomConfigInput = z.input<typeof WecomConfigSchema>
 
