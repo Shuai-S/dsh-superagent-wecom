@@ -4,10 +4,15 @@
  *  parses synchronously and answers 200 'success' immediately; the engine
  *  pipeline runs async afterwards and its failures are only logged. Apps push
  *  XML bodies ({@link parseWecomXml}); smart robots push JSON bodies carrying
- *  an encrypt field (official 101034, read 2026-11-04). */
+ *  an encrypt field (official 101034, read 2026-11-04). Inbound MsgId/msgid
+ *  are deduped per route before dispatch (WeCom re-pushes callbacks when the
+ *  answer is lost) — see dedup.ts; empty ids skip the check.
+ *  入站 MsgId/msgid 在派发前按路由去重（应答丢失时企业微信会重推）——见
+ *  dedup.ts；空 id 跳过判重。 */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { XMLParser } from 'fast-xml-parser'
 import { decrypt, verifySignature } from './crypto.ts'
+import { seenOrAdd } from './dedup.ts'
 
 /** Structural subset of the configured account the callback needs. */
 export interface CallbackAccount {
@@ -51,6 +56,9 @@ export interface CallbackServerOptions {
   bots: CallbackBot[]
   onMessage: (message: IncomingWecomMessage) => void | Promise<void>
   onBotMessage: (message: IncomingBotMessage) => void | Promise<void>
+  /** Dedup state dir override (tests); default ~/.local/state/dsh-superagent-wecom.
+   *  去重状态目录覆盖（测试注入）；缺省 ~/.local/state/dsh-superagent-wecom。 */
+  seenBaseDir?: string
 }
 
 const MAX_BODY_BYTES = 1024 * 1024
@@ -202,12 +210,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, opts: CallbackS
         console.error('[wecom] bot payload is not JSON: ' + plain.slice(0, 500))
         return
       }
+      // msgid 去重：storeKey = callbackPath；空 id 跳过（无 msgid 的事件交给下游过滤）。
+      const botMsgId = String(payload.msgid ?? '').trim()
+      if (botMsgId && (await seenOrAdd(route.bot.callbackPath, botMsgId, opts.seenBaseDir))) {
+        console.error('[wecom] bot duplicate msgid=' + botMsgId + ' dropped (bot=' + route.bot.callbackPath + ')')
+        return
+      }
       void Promise.resolve()
         .then(() => opts.onBotMessage({ bot: route.bot, payload, raw: plain }))
         .catch((error: unknown) => console.error('[wecom] onBotMessage failed:', String(error).slice(0, 300)))
       return
     }
     const fields = parseWecomXml(plain)
+    // MsgId 去重：storeKey = callbackPath；空 id（无 MsgId 的事件）跳过。
+    const msgId = String(fields.MsgId ?? '').trim()
+    if (msgId && (await seenOrAdd(route.account.callbackPath, msgId, opts.seenBaseDir))) {
+      console.error('[wecom] duplicate MsgId=' + msgId + ' dropped (account=' + route.account.callbackPath + ')')
+      return
+    }
     void Promise.resolve()
       .then(() => opts.onMessage({ account: route.account, fields, xml: plain }))
       .catch((error: unknown) => console.error('[wecom] onMessage failed:', String(error).slice(0, 300)))

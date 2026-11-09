@@ -2,11 +2,16 @@
  *  restart, mirrors the dingtalk Stream client lifecycle), maps callback
  *  messages (app accounts: XML; smart robots: JSON) to Triggers and feeds
  *  receive(). Health reports the listening state and start failures such as
- *  EADDRINUSE. */
+ *  EADDRINUSE, with a compact in-memory counter tail (in=/out=/fail=/last=).
+ *  健康上报监听状态与启动失败（如 EADDRINUSE），detail 末尾追加紧凑内存计数
+ *  （in=/out=/fail=/last=<ISO>，单行，进程重启清零）。 */
 import type { Server } from 'node:http'
 import type { SourceContextLike } from './types.ts'
 import { startCallbackServer, type IncomingBotMessage, type IncomingWecomMessage } from './callback.ts'
-import { buildWecomBotTrigger, buildWecomTrigger, channelConfig, HEALTH_ENTRY, type WecomAccount, type WecomBot, type WecomConfig } from './wecom-kind.ts'
+import { bumpStat, buildWecomBotTrigger, buildWecomTrigger, channelConfig, HEALTH_ENTRY, statsDetail, type WecomAccount, type WecomBot, type WecomConfig } from './wecom-kind.ts'
+
+/** 健康 detail 追加紧凑内存计数（单行）：… | in=3 out=2 fail=0 last=<ISO>。 */
+const withStats = (detail: string): string => detail + ' | ' + statsDetail()
 
 export function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -52,6 +57,7 @@ async function onCallbackMessage(source: SourceContextLike, seenSenders: Set<str
     return
   }
   console.error('[wecom] msg in: type=' + String(trigger.meta.msgType) + ' msgId=' + String(trigger.meta.messageId) + ' from=' + from + ' text="' + trigger.text.slice(0, 60) + '"')
+  bumpStat('in')
   await source.receive(trigger)
 }
 
@@ -81,6 +87,7 @@ async function onBotCallbackMessage(source: SourceContextLike, seenSenders: Set<
     return
   }
   console.error('[wecom] bot msg in: type=' + String(trigger.meta.msgType) + ' msgId=' + String(trigger.meta.messageId) + ' chat=' + String(trigger.meta.chatid) + ' from=' + from + ' text="' + trigger.text.slice(0, 60) + '"')
+  bumpStat('in')
   await source.receive(trigger)
 }
 
@@ -114,9 +121,9 @@ export async function watch(source: SourceContextLike, signal: AbortSignal): Pro
           state.server = server
           state.hash = hash
           lastError = ''
-          source.report(HEALTH_ENTRY, { state: 'ready', detail: 'callback listening on :' + config.callbackPort + ' (' + accounts.length + ' accounts, ' + bots.length + ' bots)' })
+          source.report(HEALTH_ENTRY, { state: 'ready', detail: withStats('callback listening on :' + config.callbackPort + ' (' + accounts.length + ' accounts, ' + bots.length + ' bots)') })
         } else if (!state.server.listening) {
-          source.report(HEALTH_ENTRY, { state: 'error', detail: 'callback server stopped listening' })
+          source.report(HEALTH_ENTRY, { state: 'error', detail: withStats('callback server stopped listening') })
         }
       } else {
         if (state.server) {
@@ -125,14 +132,14 @@ export async function watch(source: SourceContextLike, signal: AbortSignal): Pro
           state.hash = ''
         }
         channelConfig.current = undefined
-        source.report(HEALTH_ENTRY, { state: 'paused', detail: 'waiting for callback accounts in settings' })
+        source.report(HEALTH_ENTRY, { state: 'paused', detail: withStats('waiting for callback accounts in settings') })
       }
     } catch (error) {
       const detail = String(error).slice(0, 300)
       // 端口被占（EADDRINUSE）等启动失败每轮重试；同因只报一次，端口释放后自动恢复。
       if (detail !== lastError) {
         lastError = detail
-        source.report(HEALTH_ENTRY, { state: 'error', detail })
+        source.report(HEALTH_ENTRY, { state: 'error', detail: withStats(detail) })
       }
     }
     await pause(5000, signal)

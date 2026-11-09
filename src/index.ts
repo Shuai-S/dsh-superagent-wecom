@@ -28,6 +28,10 @@ export function apply(ctx: Context): void {
     return async () => { controller.abort(); await running }
   })
 }
-export { wecomKind, WecomConfigSchema, buildWecomTrigger } from './wecom-kind.ts'
+export { wecomKind, WecomConfigSchema, buildWecomTrigger, buildWecomBotTrigger, wecomImageKeys, accountIdOf, botGroupRowId, channelConfig, bumpStat, statsDetail, wecomStats } from './wecom-kind.ts'
 export { verifySignature, decrypt, encrypt, signatureOf } from './crypto.ts'
-export { parseWecomXml } from './callback.ts'
+export { parseWecomXml, startCallbackServer } from './callback.ts'
+export { chunkText, LIMIT } from './chunk.ts'
+export { SEEN_LIMIT, sanitizeSegment, seenFile, seenOrAdd } from './dedup.ts'
+export { FAILURE_ERROR_MAX, FAILURE_LOG_LIMIT, appendSendFailure, failureLogFile, setFailureLogBaseDirForTests } from './failure-log.ts'
+export { validAccounts, validBots } from './watch.ts'
