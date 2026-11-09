@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "WeCom Source",
-    "description": "Direct WeCom source: a self-built app in callback mode receives app-chat and group-@ messages; replies go back via the WeCom OpenAPI."
+    "description": "Direct WeCom source: a self-built app in callback mode receives app-chat and group-@ messages; replies return via the WeCom OpenAPI. Callbacks are signed+encrypted and deduped by MsgId; sendAck receipts are optional. Needs a callback URL on 80/443 with Token and 43-char EncodingAESKey; members must be whitelisted.",
+    "detail": "docs/DETAIL.md"
   }
 }

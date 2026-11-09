@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "企业微信 Source",
-    "description": "企业微信直连消息源：自建应用回调模式实时接收应用单聊与智能机器人群聊 @ 消息，回复经企业微信 OpenAPI 直接回企业微信。"
+    "description": "企业微信直连消息源：自建应用回调实时接收应用单聊与群聊 @ 机器人消息，回复经 OpenAPI 直接回企业微信。回调恒为签名+密文，先验签再解密；按 callbackPath 区分多账号，可选 sendAck 接单回执，MsgId 去重防重复建票。前置：企业微信后台配置回调 URL（80/443）、Token 与 43 位 EncodingAESKey，成员加白名单后方可派活。",
+    "detail": "docs/DETAIL.zh.md"
   }
 }
