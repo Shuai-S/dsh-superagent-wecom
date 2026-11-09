@@ -133,7 +133,7 @@ test('deliver: 受理构造非人类 Trigger（human:false、meta.deliver、addr
   assert.equal(trig.source, 'wecom')
   assert.equal(trig.human, false)
   assert.equal(trig.addressed, 'direct')
-  assert.equal(trig.actor.id, 'deliver')
+  assert.equal(trig.actor.id, 'dsh-superagent-wecom')
   assert.deepEqual(trig.threads, [{ source: 'wecom', id: 'u:zhang' }])
   assert.equal(trig.channel.address.account, 'acc')
   assert.equal(trig.channel.address.touser, 'zhang')

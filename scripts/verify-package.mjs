@@ -111,3 +111,15 @@ if (failures.length > 0) {
   process.exit(1)
 }
 console.log('verify-package: OK')
+
+// P-C'：client bundle 探针（页壳注册标识，防 tree-shaking/漂移假阴性——双引号风格实查）
+if (pkg.exports && pkg.exports['./client']) {
+  const client = await readFile(rel('lib/client.js'), 'utf8')
+  for (const probe of [
+    { label: 'sources shell page id', patterns: ['dsh-superagent-sources-settings'] },
+    { label: 'sources tab slot', patterns: ['dsh.sources.settings.tabs'] },
+    { label: 'panel id', patterns: ['dsh-superagent-wecom'] },
+  ]) {
+    check('client probe [' + probe.label + ']', probe.patterns.some((p) => client.includes(p)), 'missing from lib/client.js')
+  }
+}

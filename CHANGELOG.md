@@ -6,6 +6,10 @@
 ## [Unreleased]
 
 ### Added
+
+- P-C'（契约 §1/§4）：「源设置」共享页壳接入——vendored shell + src/shell/tab.ts（健康卡/投递目标 CRUD/deliver 测试）+ src/client.ts 新 client bundle 入口（esbuild --bundle devDep 豁免；react 宿主 require）；targets CRUD 路由（GET/PUT /targets、DELETE /targets/<id）+ targets.ts 增 upsert/remove；投递 actor id 统一为 dsh-superagent-wecom（引擎配置前提同步：policy.sources.wecom.bots 改列该 id）
+
+### Added
 - CI 工作流（`.github/workflows/ci.yml`）：push main 与 PR 触发，typecheck + build + test + 打包一致性校验全绿闸门，不发布任何产物。
 - `scripts/verify-package.mjs`：零依赖打包一致性校验——files[] 全部存在、构建产物含 `sources.register(` 与 kind 名（不带引号子串探针）、cordis.patch.yml 挂载包名一致、双语 locale 顶层键集合一致、icon.svg 存在、`dsh.compatibility` 已声明。
 - 出站文本分块（`src/chunk.ts`）：应用文本消息按官方上限 2048 字节（90236 实证）做 UTF-8 安全切分（优先段落空行 > 换行 > 空格 > 硬切，不劈代理对/组合字符），channel.send 逐块顺序发送；首块失败原样抛出交引擎干净重试，后续块失败记失败日志后按已送达收尾，防引擎整条重试造成重复投递。
